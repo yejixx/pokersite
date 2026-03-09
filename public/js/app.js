@@ -395,8 +395,9 @@ function renderPlayersPanel() {
 
 // ── Dynamic Seat Creation ────────────────────────────────────
 function createAndPositionSeats(maxSeats) {
-  // Remove existing seats
+  // Remove existing seats and table bets
   el.tableArea.querySelectorAll('.seat').forEach(e => e.remove());
+  el.tableArea.querySelectorAll('.table-bet').forEach(e => e.remove());
 
   for (let i = 0; i < maxSeats; i++) {
     const seatEl = document.createElement('div');
@@ -412,6 +413,16 @@ function createAndPositionSeats(maxSeats) {
     seatEl.style.top = `calc(50% + ${yFactor.toFixed(4)} * min(28vw, 295px))`;
 
     el.tableArea.appendChild(seatEl);
+
+    // Table bet chip — positioned 40% of the way from seat toward center
+    const betEl = document.createElement('div');
+    betEl.className = 'table-bet';
+    betEl.dataset.betSeat = i;
+    const bx = xFactor * 0.55;
+    const by = yFactor * 0.55;
+    betEl.style.left = `calc(50% + ${bx.toFixed(4)} * min(38vw, 400px))`;
+    betEl.style.top = `calc(50% + ${by.toFixed(4)} * min(28vw, 295px))`;
+    el.tableArea.appendChild(betEl);
   }
 }
 
@@ -441,11 +452,10 @@ function renderSeats() {
       if (inHand && i === state.mySeatIndex && state.myHand.length === 2) {
         for (const c of state.myHand) cardsDiv.appendChild(createCardEl(c, true));
       } else if (inHand && ps && ps.revealedHand) {
-        // All-in revealed cards
+        // All-in revealed cards — create already flipped to avoid re-animation
         for (const c of ps.revealedHand) {
-          const cardEl = createCardEl(c, false);
+          const cardEl = createCardEl(c, true);
           cardsDiv.appendChild(cardEl);
-          setTimeout(() => cardEl.classList.add('flipped'), 100);
         }
       } else if (inHand) {
         cardsDiv.appendChild(createCardEl(null, false));
@@ -566,6 +576,21 @@ function renderSeats() {
       }
     }
   }
+
+  // Update table bet chips
+  for (let i = 0; i < state.maxSeats; i++) {
+    const betEl = document.querySelector(`.table-bet[data-bet-seat="${i}"]`);
+    if (!betEl) continue;
+    const ps = state.game.playerStates[i];
+    if (ps && ps.currentBet > 0) {
+      betEl.textContent = ps.currentBet.toLocaleString();
+      betEl.classList.add('visible');
+    } else {
+      betEl.textContent = '';
+      betEl.classList.remove('visible');
+    }
+  }
+
   renderPlayersPanel();
 }
 
@@ -968,11 +993,26 @@ socket.on('new-phase', (data) => {
 
 // ── Cards Revealed (all-in runout) ───────────────────────────
 socket.on('cards-revealed', (data) => {
+  // First, set revealedHand but mark as newly revealed for animation
+  const newlyRevealed = [];
   for (const h of data.hands) {
     const ps = state.game.playerStates[h.seatIndex];
-    if (ps) ps.revealedHand = h.hand;
+    if (ps && !ps.revealedHand) {
+      ps.revealedHand = h.hand;
+      newlyRevealed.push(h.seatIndex);
+    }
   }
   renderSeats();
+  // Animate flip only for newly revealed seats
+  for (const si of newlyRevealed) {
+    const cardsDiv = document.getElementById(`seat-cards-${si}`);
+    if (cardsDiv) {
+      Array.from(cardsDiv.children).forEach((cardEl, ci) => {
+        cardEl.classList.remove('flipped');
+        setTimeout(() => cardEl.classList.add('flipped'), 80 + ci * 100);
+      });
+    }
+  }
 });
 
 // ── Player Busted ────────────────────────────────────────────
@@ -1023,7 +1063,11 @@ socket.on('showdown', (data) => {
     if (seat) seat.winCount = (seat.winCount || 0) + 1;
   }
 
+  // Highlight winners
+  highlightWinners(winners);
+
   setTimeout(() => {
+    clearWinnerHighlights();
     animateShuffle(() => {
       resetGameState();
       renderSeats();
@@ -1049,13 +1093,44 @@ socket.on('hand-complete', (data) => {
     if (seat) seat.winCount = (seat.winCount || 0) + 1;
   }
 
+  // Highlight winners
+  highlightWinners(data.winners);
+
   setTimeout(() => {
+    clearWinnerHighlights();
     animateShuffle(() => {
       resetGameState();
       renderSeats();
     });
   }, 2500);
 });
+
+// ── Winner Highlight ─────────────────────────────────────────
+function highlightWinners(winners) {
+  for (const w of winners) {
+    const seatInfo = $(`.seat[data-seat="${w.seatIndex}"] .seat-info`);
+    if (!seatInfo) continue;
+    seatInfo.classList.add('winner-glow');
+
+    // Add WINNER badge  
+    const badge = document.createElement('div');
+    badge.className = 'winner-badge';
+    badge.textContent = 'WINNER';
+    seatInfo.appendChild(badge);
+
+    // Add win amount
+    const amountEl = document.createElement('div');
+    amountEl.className = 'winner-amount';
+    amountEl.textContent = '+' + w.amount.toLocaleString();
+    seatInfo.appendChild(amountEl);
+  }
+}
+
+function clearWinnerHighlights() {
+  document.querySelectorAll('.winner-glow').forEach(el => el.classList.remove('winner-glow'));
+  document.querySelectorAll('.winner-badge').forEach(el => el.remove());
+  document.querySelectorAll('.winner-amount').forEach(el => el.remove());
+}
 
 function resetGameState() {
   state.game.phase = 'waiting';
